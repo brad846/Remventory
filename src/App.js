@@ -1,5 +1,4 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { supabase } from "./supabase";
 
 const THICKNESSES = ["1cm", "2cm", "3cm"];
 const MATERIALS = ["Natural Stone", "Quartz", "Porcelain"];
@@ -85,21 +84,31 @@ export default function App() {
   const checkInputRef = useRef();
 
 const loadSlabs = useCallback(async (attempt = 1) => {
-    const { data, error } = await supabase
-      .from("slabs")
-      .select("*")
-      .order("created_at", { ascending: false });
-    if (error) {
-      console.error("Load error:", error);
+    try {
+      const res = await fetch('/api/slabs');
+      const data = await res.json();
+      setSlabs(data.map(row => ({
+        id: row.id,
+        stockNumber: row.stock_number,
+        colorName: row.color_name,
+        width: row.width,
+        height: row.height,
+        thickness: row.thickness,
+        material: row.material || "",
+        job: row.job || "",
+        notes: row.notes || "",
+        photo: row.photo || null,
+        flagged: row.flagged || false,
+        createdAt: row.created_at,
+      })));
+      setLoaded(true);
+    } catch (e) {
       if (attempt < 3) {
         setTimeout(() => loadSlabs(attempt + 1), 2000);
       } else {
         showToast("Failed to load inventory.", "error");
         setLoaded(true);
       }
-    } else {
-      setSlabs((data || []).map(rowToSlab));
-      setLoaded(true);
     }
   }, []);
 
@@ -122,15 +131,17 @@ const loadSlabs = useCallback(async (attempt = 1) => {
   }
 
   async function getNextStockNumber() {
-    const { data, error } = await supabase.rpc("increment_counter");
-    if (error || !data) {
+    try {
+      const res = await fetch('/api/counter', { method: 'POST' });
+      const data = await res.json();
+      return formatStockNumber(data.value);
+    } catch (e) {
       const nums = slabs
         .map(s => parseInt((s.stockNumber || "").replace("R-", ""), 10))
         .filter(n => !isNaN(n));
       const next = nums.length > 0 ? Math.max(...nums) + 1 : 1;
       return formatStockNumber(next);
     }
-    return formatStockNumber(data);
   }
 
   async function handleAdd() {
@@ -140,8 +151,8 @@ const loadSlabs = useCallback(async (attempt = 1) => {
     try {
       const stockNumber = await getNextStockNumber();
       const slab = { ...form, id: generateId(), stockNumber, createdAt: new Date().toLocaleDateString() };
-      const { error } = await supabase.from("slabs").insert([slabToRow(slab)]);
-      if (error) throw error;
+      const res = await fetch('/api/slabs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(slabToRow(slab)) });
+      if (!res.ok) throw new Error('Failed to save');
       setSlabs((s) => [slab, ...s]);
       setForm(emptyForm);
       setNewSlabConfirm(slab);
@@ -158,8 +169,8 @@ const loadSlabs = useCallback(async (attempt = 1) => {
     if (!editForm.width || !editForm.height) return showToast("Dimensions are required.", "error");
     setSaving(true);
     try {
-      const { error } = await supabase.from("slabs").update(slabToRow(editForm)).eq("id", editForm.id);
-      if (error) throw error;
+      const res = await fetch('/api/slabs', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(slabToRow(editForm)) });
+      if (!res.ok) throw new Error('Failed to update');
       setSlabs((s) => s.map((sl) => (sl.id === editForm.id ? editForm : sl)));
       setSelectedSlab(editForm);
       setEditMode(false);
@@ -176,8 +187,8 @@ const loadSlabs = useCallback(async (attempt = 1) => {
   async function handleRemove(id) {
     setSaving(true);
     try {
-      const { error } = await supabase.from("slabs").delete().eq("id", id);
-      if (error) throw error;
+      const res = await fetch('/api/slabs', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+      if (!res.ok) throw new Error('Failed to delete');
       setSlabs((s) => s.filter((sl) => sl.id !== id));
       setRemoveConfirm(null);
       setScreen("search");
@@ -194,8 +205,7 @@ const loadSlabs = useCallback(async (attempt = 1) => {
     setSaving(true);
     try {
       const updates = slabs.map((sl) => ({ ...slabToRow(sl), flagged: !checkScanned.has(sl.id) }));
-      const { error } = await supabase.from("slabs").upsert(updates);
-      if (error) throw error;
+     await Promise.all(updates.map(u => fetch('/api/slabs', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(u) })));
       setSlabs((s) => s.map((sl) => ({ ...sl, flagged: !checkScanned.has(sl.id) })));
       setScreen("check_summary");
     } catch (e) {
